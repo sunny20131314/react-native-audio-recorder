@@ -1,0 +1,26 @@
+{
+  "name": "react-native-audio-recorder",
+  "version": "0.0.1",
+  "description": "",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sunny20131314/react-native-audio-recorder.git"
+  },
+  "keywords": [
+    "react-component",
+    "react-native",
+    "ios",
+    "android",
+    "record",
+    "audio"
+  ],
+  "author": {
+    "name": "sunny20131314",
+    "url": "https://github.com/sunny20131314"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/sunny20131314/react-native-audio-recorder/issues"
+  }
+}
