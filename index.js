@@ -40,7 +40,12 @@ export default {
 
     startRecording(saveFilePath, fileName) {
         return new Promise((resolve, reject) => {
-            Recorder.startRecording(saveFilePath, fileName, (args) => resolve(args));
+            if (Platform.OS === 'ios'){
+                Recorder.startRecording((args) => resolve(args));
+            }
+            else {
+                Recorder.startRecording(saveFilePath, fileName, (args) => resolve(args));
+            }
         });
     },
 
@@ -62,6 +67,7 @@ export default {
         });
     },
 
+    // android
     clearCache(){
         return new Promise((resolve, reject) => {
             Recorder.clearCache((args) => resolve(args));
