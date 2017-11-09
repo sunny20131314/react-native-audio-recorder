@@ -1,10 +1,18 @@
 package com.sunny.audioRecorder;
 
 import java.io.File;
-import android.widget.Toast;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.io.FileNotFoundException;
+import java.util.Timer;
+import java.util.TimerTask;
+
 import android.util.Log;
 import android.content.Context;
 import android.media.AudioFormat;
+import android.media.AudioRecord;
+import android.media.MediaRecorder;
+import android.os.AsyncTask;
 
 
 import com.facebook.react.bridge.NativeModule;
@@ -20,18 +28,30 @@ import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 
-//import com.sunny.audioRecorder.AudioEncode;
+// 头文件
+import com.sunny.audioRecorder.WavHeader;
 
+// 编译
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
+import android.media.MediaMuxer;
+import android.os.Environment;
 
+import java.nio.ByteBuffer;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.io.FileInputStream;
+
+/**
+ * Created by sunzhimin on 2017/11/3.
+ */
 public class RecordModule extends ReactContextBaseJavaModule {
     private Callback callback;
     private static final String TAG = RecordModule.class.getSimpleName();
-    private AudioRecorder exRecorder = null;
-    private Context context;
+    private AudioRecord auRecorder = null;
     private String audioFilePath; // 音频文件路径
     private String audioPath;  // 音频路径(文件夹)
-
-    public static RecordModule instance; // 保存
 
     // 设置音频采样率，44100是目前的标准，但是某些设备仍然支持22050,16000,11025
     private final int sampleRateInHz = 44100;
@@ -40,56 +60,64 @@ public class RecordModule extends ReactContextBaseJavaModule {
     // 音频数据格式:PCM 16位每个样本。保证设备支持。PCM 8位每个样本。不一定能得到设备支持。
     private final int audioFormat = AudioFormat.ENCODING_PCM_16BIT;
 
+    /**
+     * 录音:
+     *
+     * 初始化
+     * -> 开始录音
+     * |  暂停
+     * |  结束: 开始编译文件为wav格式, 返回wav地址。
+     * -- 重新录制(清除缓存,开始录音)
+     * */
+    /**
+     * INITIALIZING : recorder is initializing;
+     * RECORDING : recording
+     * PAUSED : recording pause
+     * ERROR : reconstruction needed
+     * STOPPED: reset needed
+     */
+    public enum State {INITIALIZING, RECORDING, PAUSED, ERROR, STOPPED};
+
+    // Recorder state; see State
+    public State state;
+
+    //录制音频参数
+    private final int audioSource = MediaRecorder.AudioSource.MIC;
+
+    // File writer (only in uncompressed mode)
+    private RandomAccessFile randomAccessWriter;
+
+    // buffer size
+    private int bufferSize;
+
+    private Timer timer;
+
+    // 记录录音时间
+    private int recorderSecondsElapsed = 0;
+
     public RecordModule(ReactApplicationContext reactContext) {
         super(reactContext);
-        this.context = reactContext;
-        this.context = reactContext;
-        instance = this;
+        //this.context = reactContext;
     }
 
     @Override
     public String getName() { return "AudioRecorderManager"; }
 
     @ReactMethod
-    public void prepareRecordingAtPath(String recordingPath, ReadableMap recordingSettings, Promise promise) {
-//        if (isRecording){
-//            logAndRejectPromise(promise, "INVALID_STATE", "Please call stopRecording before starting recording");
-//        }
-//
-//        recorder = new MediaRecorder();
-//        try {
-//            recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-//            int outputFormat = getOutputFormatFromString(recordingSettings.getString("OutputFormat"));
-//            recorder.setOutputFormat(outputFormat);
-//            int audioEncoder = getAudioEncoderFromString(recordingSettings.getString("AudioEncoding"));
-//            recorder.setAudioEncoder(audioEncoder);
-//            recorder.setAudioSamplingRate(recordingSettings.getInt("SampleRate"));
-//            recorder.setAudioChannels(recordingSettings.getInt("Channels"));
-//            recorder.setAudioEncodingBitRate(recordingSettings.getInt("AudioEncodingBitRate"));
-//            recorder.setOutputFile(recordingPath);
-//        }
-//        catch(final Exception e) {
-//            logAndRejectPromise(promise, "COULDNT_CONFIGURE_MEDIA_RECORDER" , "Make sure you've added RECORD_AUDIO permission to your AndroidManifest.xml file "+e.getMessage());
-//            return;
-//        }
-//
-//        currentOutputFile = recordingPath;
-//        try {
-//            recorder.prepare();
-//            promise.resolve(currentOutputFile);
-//        } catch (final Exception e) {
-//            logAndRejectPromise(promise, "COULDNT_PREPARE_RECORDING_AT_PATH "+recordingPath, e.getMessage());
-//        }
-    }
-
-    @ReactMethod
     public void startRecording(String filePath, String fileName, Callback callback) {
-        sendEvent("recordingProgress", "dddd1");
-
         WritableMap callbackMap = Arguments.createMap();
-        if ( exRecorder == null || exRecorder.getState() == AudioRecorder.State.INITIALIZING || exRecorder.getState() == AudioRecorder.State.STOPPED ) {
+
+        // 开始录音
+        if (  state == State.ERROR || state == State.STOPPED || auRecorder == null) {
             audioFilePath = filePath + fileName;
             audioPath = filePath;
+
+            // 已存在的删除，重新实例化
+            if ( auRecorder != null ) {
+                auRecorder.stop();
+                auRecorder.release();
+                auRecorder = null;
+            }
             try {
                 // 文件存在则创建
                 File outputPath = new File(audioPath);
@@ -101,24 +129,46 @@ public class RecordModule extends ReactContextBaseJavaModule {
                 }
             } catch (Exception ex) {
                 callbackMap.putBoolean("success", false);
-                callbackMap.putString("message","文件夹创建失败");
+                callbackMap.putString("message","文件操作失败");
                 callback.invoke(callbackMap);
                 return;
             }
-            exRecorder = AudioRecorder.getInstanse(sampleRateInHz, channelConfig, audioFormat, this);
-            exRecorder.setOutputFile(audioFilePath);
-            exRecorder.start();
 
-            callbackMap.putBoolean("success", true);
-            callbackMap.putString("message","开始录音");
+            try
+            {
+                bufferSize = AudioRecord.getMinBufferSize(sampleRateInHz, channelConfig, audioFormat);
+                auRecorder = new AudioRecord(audioSource, sampleRateInHz, channelConfig, audioFormat, bufferSize);
+
+                writeWavHeader(); // 添加头文件, 录音后直接生成 wav 格式文件
+                if ( auRecorder != null ) {
+                    state = State.INITIALIZING;
+                    start();
+                    callbackMap.putBoolean("success", true);
+                    callbackMap.putString("message","开始录音");
+                }
+                else {
+                    state = State.ERROR;
+                }
+            }
+            catch (IOException e) {
+                callbackMap.putBoolean("success", false);
+                callbackMap.putString("message","初始化失败: " + e.getMessage());
+                state = State.ERROR;
+            }
+            catch (Exception e)
+            {
+                callbackMap.putBoolean("success", false);
+                callbackMap.putString("message","初始化失败: " + e.getMessage());
+                state = State.ERROR;
+            }
         }
-        else if (exRecorder.getState() == AudioRecorder.State.PAUSED) {
-            exRecorder.start();
-
+        // 继续录音
+        else if (state == State.INITIALIZING || state == State.PAUSED) {
+            start();
             callbackMap.putBoolean("success", true);
             callbackMap.putString("message","继续录音");
         }
-        else if (exRecorder.getState() == AudioRecorder.State.RECORDING) {
+        else if (state == State.RECORDING) {
             callbackMap.putBoolean("success", true);
             callbackMap.putString("message","录音已开始");
         }
@@ -132,17 +182,16 @@ public class RecordModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void pauseRecording(Callback callback) {
         WritableMap callbackMap = Arguments.createMap();
-        if (exRecorder == null || exRecorder.getState() != AudioRecorder.State.RECORDING){
+        if (auRecorder == null || state != State.RECORDING){
             callbackMap.putBoolean("success", false);
             callbackMap.putString("message","暂停操作失败, 未正确开始录音,或发生错误.");
         }
-        else if (exRecorder.getState() == AudioRecorder.State.PAUSED) {
+        else if (state == State.PAUSED) {
             callbackMap.putBoolean("success", true);
             callbackMap.putString("message","录音已暂停");
         }
         else {
-            exRecorder.pause();
-
+            pause();
             callbackMap.putBoolean("success", true);
             callbackMap.putString("message", "暂停录音成功");
         }
@@ -152,31 +201,64 @@ public class RecordModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void stopRecording(Callback callback) {
+        if (auRecorder != null && state != State.STOPPED){
+            stop();
+        }
+
         WritableMap callbackMap = Arguments.createMap();
-//        if (exRecorder == null || exRecorder.getState() != AudioRecorder.State.RECORDING || exRecorder.getState() != AudioRecorder.State.PAUSED ){
-//            callbackMap.putBoolean("success", false);
-//            callbackMap.putString("message","未正确开始录音,或发生错误.");
-//        }
-//        else
-        if (exRecorder.getState() == AudioRecorder.State.STOPPED) {
-            callbackMap.putBoolean("success", true);
-            callbackMap.putString("message","录音已结束");
-        }
-        else {
-            exRecorder.stop();
-//            exRecorder.release();
-            exRecorder = null;
-
-            callbackMap.putBoolean("success", true);
-            callbackMap.putString("message", audioFilePath);
-        }
-
+        callbackMap.putBoolean("success", true);
+        callbackMap.putString("message","录音已结束");
+        callbackMap.putString("param", audioFilePath);
         callback.invoke(callbackMap);
     }
 
     @ReactMethod
     public void resetRecording(Callback callback) {
-        exRecorder.reset();
+        WritableMap callbackMap = Arguments.createMap();
+        try
+        {
+            if ( state == State.PAUSED || state == State.RECORDING ) {
+                stop();
+                state = State.INITIALIZING; // 中止录音
+                recorderSecondsElapsed = 0;
+
+                randomAccessWriter.close(); // Remove prepared file
+
+//              删除缓存文件
+                if (audioFilePath != null)
+                {
+                    (new File(audioFilePath)).delete();
+                }
+            }
+
+            auRecorder = new AudioRecord(audioSource, sampleRateInHz, channelConfig, audioFormat, bufferSize);
+
+            if ( auRecorder != null ) {
+                state = State.INITIALIZING;
+                callbackMap.putBoolean("success", true);
+                callbackMap.putString("message","录音已重置");
+                callbackMap.putString("param", audioFilePath);
+                start();
+            }
+            else {
+                state = State.ERROR;
+                callbackMap.putBoolean("success", false);
+                callbackMap.putString("message","初始化失败");
+            }
+        }
+        catch (IOException e)
+        {
+            callbackMap.putString("message","初始化失败" + e.getMessage());
+            callbackMap.putBoolean("success", false);
+            state = State.ERROR;
+        }
+        catch (Exception e)
+        {
+            callbackMap.putBoolean("success", false);
+            callbackMap.putString("message","初始化失败: " + e.getMessage());
+            state = State.ERROR;
+        }
+        callback.invoke(callbackMap);
     }
 
     @ReactMethod
@@ -205,18 +287,253 @@ public class RecordModule extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
-    public void encodeToM4a(Callback callback) {
-        Log.i("ccc State.STOPPED:", "开始编译");
-        // todo 开始编译
-        AudioEncode audioEncode = AudioEncode.getInstanse(audioFilePath, audioFilePath + ".m4a", audioFormat, sampleRateInHz);
-        audioEncode.startEncode();
-
-        // todo 结束后返回地址~
+    public void encodeToM4a() {
+        new AudioEncodeTask().execute();
     }
 
     private void sendEvent(String eventName, Object params) {
         this.getReactApplicationContext()
                 .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
                 .emit(eventName, params);
+    }
+
+    /**
+     * 录音
+     */
+    public void start() {
+        state = State.RECORDING;
+        new AudioRecordTask().execute();
+        startTimer();
+
+        // 开始录音
+    }
+
+    public void pause() {
+        state = State.PAUSED;
+
+        //停止录制
+        auRecorder.stop();
+
+        stopTimer();
+    }
+
+    public void stop()
+    {
+        state = State.STOPPED;
+
+        //停止录制
+        auRecorder.stop();
+        auRecorder.release();
+        auRecorder = null;
+
+        stopTimer();
+    }
+
+    class AudioRecordTask extends AsyncTask<Void, Void, Void>{
+        @Override
+        protected Void doInBackground(Void... params) {
+            try {
+                randomAccessWriter = randomAccessFile(audioFilePath);
+                //定义缓冲
+                byte[] b = new byte[bufferSize];
+
+                //开始录制音频
+                auRecorder.startRecording();
+
+                //定义循环，根据 State.RECORDING 的值来判断是否继续录制
+                while (state == State.RECORDING) {
+                    //从bufferSize中读取字节。
+                    int bufferReadResult = auRecorder.read(b, 0, b.length);
+
+                    //获取字节流
+                    if (bufferReadResult > 0 && AudioRecord.ERROR_INVALID_OPERATION != bufferReadResult) {
+                        randomAccessWriter.seek(randomAccessWriter.length());
+                        randomAccessWriter.write(b, 0, b.length);
+                    }
+                }
+
+                System.out.println("ccc State:" + state);
+
+                if (state == State.STOPPED) {
+                    randomAccessWriter.close();
+                    writeWavHeader();
+                    recorderSecondsElapsed = 0;
+                    // todo 录音结束
+                    sendEvent("recordingFinished", true);
+                }
+                else if ( state == State.PAUSED ) {
+                    writeWavHeader();
+                }
+            } catch (FileNotFoundException e) {
+                e.printStackTrace();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            catch (Exception e) {
+                e.printStackTrace();
+            }
+            return null;
+        }
+    }
+
+    /** 生成文件 */
+    private static RandomAccessFile randomAccessFile(String file) {
+        RandomAccessFile randomAccessFile;
+        try {
+            randomAccessFile = new RandomAccessFile(file, "rw");
+        } catch (FileNotFoundException e) {
+            throw new RuntimeException(e);
+        }
+        return randomAccessFile;
+    }
+
+    private void writeWavHeader() throws IOException {
+        final RandomAccessFile wavFile = randomAccessFile(audioFilePath);
+        wavFile.seek(0); // to the beginning
+        wavFile.write(new WavHeader(sampleRateInHz, channelConfig, audioFormat, wavFile.length()).toBytes());
+        wavFile.close();
+    }
+
+    private void startTimer(){
+        stopTimer();
+        timer = new Timer();
+        timer.scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                // 显示时间缩小到.1s
+                if ( recorderSecondsElapsed%10 == 0 ) {
+                    WritableMap body = Arguments.createMap();
+                    body.putBoolean("success", true);
+                    body.putString("message", "录音进度");
+                    body.putInt("currentTime", recorderSecondsElapsed);
+                    sendEvent("recordingProgress", body);
+                }
+                recorderSecondsElapsed++;
+            }
+        }, 0, 100);
+    }
+
+    private void stopTimer(){
+        if (timer != null) {
+            timer.cancel();
+            timer.purge();
+            timer = null;
+        }
+    }
+
+    /**
+     * 转换格式
+     */
+
+    // 转为 m4a
+    private static final String COMPRESSED_AUDIO_FILE_MIME_TYPE = MediaFormat.MIMETYPE_AUDIO_AAC; //音频类型 aac m4a
+    private static final int OUTPUT_FORMAT = MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4; //音频类型 aac m4a
+    private static final int COMPRESSED_AUDIO_FILE_BIT_RATE = 64000; // 64kbps
+    private static final int BUFFER_SIZE = 48000;
+    private static final int CODEC_TIMEOUT_IN_MS = 5000;
+    static String LOGENCODE = "CONVERT AUDIO";
+
+    class AudioEncodeTask extends AsyncTask<Void, Void, Void>{
+        @Override
+        protected Void doInBackground(Void... params) {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+
+            WritableMap body = Arguments.createMap();
+
+            try {
+                File inputFile = new File(audioFilePath);
+                FileInputStream fis = new FileInputStream(inputFile);
+
+                File outputFile = new File(audioFilePath + ".m4a");
+                if (outputFile.exists()) outputFile.delete();
+
+                MediaMuxer mux = new MediaMuxer(outputFile.getAbsolutePath(), OUTPUT_FORMAT);
+                MediaFormat outputFormat = MediaFormat.createAudioFormat(COMPRESSED_AUDIO_FILE_MIME_TYPE,sampleRateInHz, audioFormat == AudioFormat.CHANNEL_IN_MONO ? 1 : 2);
+                outputFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
+                outputFormat.setInteger(MediaFormat.KEY_BIT_RATE, COMPRESSED_AUDIO_FILE_BIT_RATE);
+                outputFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384);
+
+                MediaCodec codec = MediaCodec.createEncoderByType(COMPRESSED_AUDIO_FILE_MIME_TYPE);
+                codec.configure(outputFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                codec.start();
+
+                ByteBuffer[] codecInputBuffers = codec.getInputBuffers(); // Note: Array of buffers
+                ByteBuffer[] codecOutputBuffers = codec.getOutputBuffers();
+
+                MediaCodec.BufferInfo outBuffInfo = new MediaCodec.BufferInfo();
+                byte[] tempBuffer = new byte[BUFFER_SIZE];
+                boolean hasMoreData = true;
+                double presentationTimeUs = 0;
+                int audioTrackIdx = 0;
+                int totalBytesRead = 0;
+                //int percentComplete = 0;
+                do {
+                    int inputBufIndex = 0;
+                    while (inputBufIndex != -1 && hasMoreData) {
+                        inputBufIndex = codec.dequeueInputBuffer(CODEC_TIMEOUT_IN_MS);
+
+                        if (inputBufIndex >= 0) {
+                            ByteBuffer dstBuf = codecInputBuffers[inputBufIndex];
+                            dstBuf.clear();
+
+                            int bytesRead = fis.read(tempBuffer, 0, dstBuf.limit());
+                            if (bytesRead == -1) { // -1 implies EOS
+                                hasMoreData = false;
+                                codec.queueInputBuffer(inputBufIndex, 0, 0, (long) presentationTimeUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                            } else {
+                                totalBytesRead += bytesRead;
+                                dstBuf.put(tempBuffer, 0, bytesRead);
+                                codec.queueInputBuffer(inputBufIndex, 0, bytesRead, (long) presentationTimeUs, 0);
+                                presentationTimeUs = 1000000l * (totalBytesRead / 2) / sampleRateInHz;
+                            }
+                        }
+                    }
+                    // Drain audio
+                    int outputBufIndex = 0;
+                    while (outputBufIndex != MediaCodec.INFO_TRY_AGAIN_LATER) {
+                        outputBufIndex = codec.dequeueOutputBuffer(outBuffInfo, CODEC_TIMEOUT_IN_MS);
+                        if (outputBufIndex >= 0) {
+                            ByteBuffer encodedData = codecOutputBuffers[outputBufIndex];
+                            encodedData.position(outBuffInfo.offset);
+                            encodedData.limit(outBuffInfo.offset + outBuffInfo.size);
+                            if ((outBuffInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0 && outBuffInfo.size != 0) {
+                                codec.releaseOutputBuffer(outputBufIndex, false);
+                            }else{
+                                mux.writeSampleData(audioTrackIdx, codecOutputBuffers[outputBufIndex], outBuffInfo);
+                                codec.releaseOutputBuffer(outputBufIndex, false);
+                            }
+                        } else if (outputBufIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                            outputFormat = codec.getOutputFormat();
+                            Log.v(LOGENCODE, "Output format changed - " + outputFormat);
+                            audioTrackIdx = mux.addTrack(outputFormat);
+                            mux.start();
+                        } else if (outputBufIndex == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
+                            Log.e(LOGENCODE, "Output buffers changed during encode!");
+                        } else if (outputBufIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                            // NO OP
+                        } else {
+                            Log.e(LOGENCODE, "Unknown return code from dequeueOutputBuffer - " + outputBufIndex);
+                        }
+                    }
+                    // 编译进度
+                    //percentComplete = (int) Math.round(((float) totalBytesRead / (float) inputFile.length()) * 100.0);
+                    //Log.v(LOGENCODE, "Conversion % - " + percentComplete);
+                } while (outBuffInfo.flags != MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                fis.close();
+                mux.stop();
+                mux.release();
+                body.putBoolean("success", true);
+                body.putString("message", "编译音频成功");
+            } catch (FileNotFoundException e) {
+                body.putBoolean("success", false);
+                body.putString("message", "找不到该音频文件");
+            } catch (IOException e) {
+                body.putBoolean("success", false);
+                body.putString("message", "编译音频失败");
+            }
+
+            sendEvent("recordingProgress", body);
+            return null;
+        }
     }
 }
