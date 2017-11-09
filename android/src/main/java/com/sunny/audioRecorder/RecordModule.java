@@ -405,7 +405,7 @@ public class RecordModule extends ReactContextBaseJavaModule {
                     WritableMap body = Arguments.createMap();
                     body.putBoolean("success", true);
                     body.putString("message", "录音进度");
-                    body.putInt("currentTime", recorderSecondsElapsed);
+                    body.putInt("currentTime", recorderSecondsElapsed / 10);
                     sendEvent("recordingProgress", body);
                 }
                 recorderSecondsElapsed++;
