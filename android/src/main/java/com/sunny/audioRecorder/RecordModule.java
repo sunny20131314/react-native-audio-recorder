@@ -128,7 +128,7 @@ public class RecordModule extends ReactContextBaseJavaModule {
                     outputFile.delete();
                 }
             } catch (Exception ex) {
-                callbackMap.putBoolean("success", false);
+                callbackMap.putBoolean("status", false);
                 callbackMap.putString("message","文件操作失败");
                 callback.invoke(callbackMap);
                 return;
@@ -143,7 +143,7 @@ public class RecordModule extends ReactContextBaseJavaModule {
                 if ( auRecorder != null ) {
                     state = State.INITIALIZING;
                     start();
-                    callbackMap.putBoolean("success", true);
+                    callbackMap.putBoolean("status", true);
                     callbackMap.putString("message","开始录音");
                 }
                 else {
@@ -151,13 +151,13 @@ public class RecordModule extends ReactContextBaseJavaModule {
                 }
             }
             catch (IOException e) {
-                callbackMap.putBoolean("success", false);
+                callbackMap.putBoolean("status", false);
                 callbackMap.putString("message","初始化失败: " + e.getMessage());
                 state = State.ERROR;
             }
             catch (Exception e)
             {
-                callbackMap.putBoolean("success", false);
+                callbackMap.putBoolean("status", false);
                 callbackMap.putString("message","初始化失败: " + e.getMessage());
                 state = State.ERROR;
             }
@@ -165,15 +165,15 @@ public class RecordModule extends ReactContextBaseJavaModule {
         // 继续录音
         else if (state == State.INITIALIZING || state == State.PAUSED) {
             start();
-            callbackMap.putBoolean("success", true);
+            callbackMap.putBoolean("status", true);
             callbackMap.putString("message","继续录音");
         }
         else if (state == State.RECORDING) {
-            callbackMap.putBoolean("success", true);
+            callbackMap.putBoolean("status", true);
             callbackMap.putString("message","录音已开始");
         }
         else {
-            callbackMap.putBoolean("success", false);
+            callbackMap.putBoolean("status", false);
             callbackMap.putString("message","初始化失败");
         }
         callback.invoke(callbackMap);
@@ -183,16 +183,16 @@ public class RecordModule extends ReactContextBaseJavaModule {
     public void pauseRecording(Callback callback) {
         WritableMap callbackMap = Arguments.createMap();
         if (auRecorder == null || state != State.RECORDING){
-            callbackMap.putBoolean("success", false);
+            callbackMap.putBoolean("status", false);
             callbackMap.putString("message","暂停操作失败, 未正确开始录音,或发生错误.");
         }
         else if (state == State.PAUSED) {
-            callbackMap.putBoolean("success", true);
+            callbackMap.putBoolean("status", true);
             callbackMap.putString("message","录音已暂停");
         }
         else {
             pause();
-            callbackMap.putBoolean("success", true);
+            callbackMap.putBoolean("status", true);
             callbackMap.putString("message", "暂停录音成功");
         }
 
@@ -201,12 +201,21 @@ public class RecordModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void stopRecording(Callback callback) {
-        if (auRecorder != null && state != State.STOPPED){
+        if (auRecorder == null){
+            return;
+        }
+        else if (state == State.PAUSED) {
+            WritableMap body = Arguments.createMap();
+            body.putBoolean("status", true);
+            body.putString("message", "录音结束");
+            sendEvent("recordingFinished", body);
+        }
+        else if (state != State.STOPPED) {
             stop();
         }
 
         WritableMap callbackMap = Arguments.createMap();
-        callbackMap.putBoolean("success", true);
+        callbackMap.putBoolean("status", true);
         callbackMap.putString("message","录音已结束");
         callbackMap.putString("param", audioFilePath);
         callback.invoke(callbackMap);
@@ -220,7 +229,6 @@ public class RecordModule extends ReactContextBaseJavaModule {
             if ( state == State.PAUSED || state == State.RECORDING ) {
                 stop();
                 state = State.INITIALIZING; // 中止录音
-                recorderSecondsElapsed = 0;
 
                 randomAccessWriter.close(); // Remove prepared file
 
@@ -231,30 +239,31 @@ public class RecordModule extends ReactContextBaseJavaModule {
                 }
             }
 
+            recorderSecondsElapsed = 0;
             auRecorder = new AudioRecord(audioSource, sampleRateInHz, channelConfig, audioFormat, bufferSize);
 
             if ( auRecorder != null ) {
                 state = State.INITIALIZING;
-                callbackMap.putBoolean("success", true);
+                callbackMap.putBoolean("status", true);
                 callbackMap.putString("message","录音已重置");
                 callbackMap.putString("param", audioFilePath);
                 start();
             }
             else {
                 state = State.ERROR;
-                callbackMap.putBoolean("success", false);
+                callbackMap.putBoolean("status", false);
                 callbackMap.putString("message","初始化失败");
             }
         }
         catch (IOException e)
         {
             callbackMap.putString("message","初始化失败" + e.getMessage());
-            callbackMap.putBoolean("success", false);
+            callbackMap.putBoolean("status", false);
             state = State.ERROR;
         }
         catch (Exception e)
         {
-            callbackMap.putBoolean("success", false);
+            callbackMap.putBoolean("status", false);
             callbackMap.putString("message","初始化失败: " + e.getMessage());
             state = State.ERROR;
         }
@@ -269,8 +278,8 @@ public class RecordModule extends ReactContextBaseJavaModule {
                 callback.invoke(true);
                 return;
             }
-            boolean success = DeleteRecursive(file);
-            callback.invoke(success);
+            boolean status = DeleteRecursive(file);
+            callback.invoke(status);
         } catch (Exception ex) {
             ex.printStackTrace();
             callback.invoke(false);
@@ -327,6 +336,7 @@ public class RecordModule extends ReactContextBaseJavaModule {
         auRecorder = null;
 
         stopTimer();
+        recorderSecondsElapsed = 0;
     }
 
     class AudioRecordTask extends AsyncTask<Void, Void, Void>{
@@ -357,9 +367,10 @@ public class RecordModule extends ReactContextBaseJavaModule {
                 if (state == State.STOPPED) {
                     randomAccessWriter.close();
                     writeWavHeader();
-                    recorderSecondsElapsed = 0;
-                    // todo 录音结束
-                    sendEvent("recordingFinished", true);
+                    WritableMap body = Arguments.createMap();
+                    body.putBoolean("status", true);
+                    body.putString("message", "录音结束");
+                    sendEvent("recordingFinished", body);
                 }
                 else if ( state == State.PAUSED ) {
                     writeWavHeader();
@@ -403,7 +414,7 @@ public class RecordModule extends ReactContextBaseJavaModule {
                 // 显示时间缩小到.1s
                 if ( recorderSecondsElapsed%10 == 0 ) {
                     WritableMap body = Arguments.createMap();
-                    body.putBoolean("success", true);
+                    body.putBoolean("status", true);
                     body.putString("message", "录音进度");
                     body.putInt("currentTime", recorderSecondsElapsed / 10);
                     sendEvent("recordingProgress", body);
@@ -522,13 +533,13 @@ public class RecordModule extends ReactContextBaseJavaModule {
                 fis.close();
                 mux.stop();
                 mux.release();
-                body.putBoolean("success", true);
+                body.putBoolean("status", true);
                 body.putString("message", "编译音频成功");
             } catch (FileNotFoundException e) {
-                body.putBoolean("success", false);
+                body.putBoolean("status", false);
                 body.putString("message", "找不到该音频文件");
             } catch (IOException e) {
-                body.putBoolean("success", false);
+                body.putBoolean("status", false);
                 body.putString("message", "编译音频失败");
             }
 
