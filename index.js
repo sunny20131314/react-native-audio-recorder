@@ -1,18 +1,20 @@
 'use strict';
 
+'use strict';
+
 import React,{
-    NativeModules,
-    Platform,
+  NativeModules,
+  Platform,
 } from 'react-native';
 
 const Recorder = NativeModules.AudioRecorderManager;
 
 // 事件：
-//     recordingProgress,
-//     recordingFinished,
-//     encodingFinished
+//     recordingProgress: 录音进度
+//     recordingFinished: 录音结束
+//     encodingFinished:  编码结束
 export default {
-    prepareRecordingAtPath: function(path, options) {
+    prepareRecordingAtPath: function(path, options = {}) {
         if (Platform.OS === 'ios') {
             var defaultOptions = {
                 SampleRate: 44100.0,
@@ -27,41 +29,49 @@ export default {
             var recordingOptions = {...defaultOptions, ...options};
 
             Recorder.prepareRecordingAtPath(
-                path,
-                recordingOptions.SampleRate,
-                recordingOptions.Channels,
-                recordingOptions.AudioQuality,
-                recordingOptions.AudioEncoding,
-                recordingOptions.MeteringEnabled,
-                recordingOptions.MeasurementMode
+              path,
+              recordingOptions.SampleRate,
+              recordingOptions.Channels,
+              recordingOptions.AudioQuality,
+              recordingOptions.AudioEncoding,
+              recordingOptions.MeteringEnabled,
+              recordingOptions.MeasurementMode
             );
         }
     },
 
     startRecording(saveFilePath, fileName) {
+        if (Platform.OS === 'ios'){
+            return Recorder.startRecording();
+        }
         return new Promise((resolve, reject) => {
-            if (Platform.OS === 'ios'){
-                Recorder.startRecording((args) => resolve(args));
-            }
-            else {
-                Recorder.startRecording(saveFilePath, fileName, (args) => resolve(args));
-            }
+            Recorder.startRecording(saveFilePath, fileName, (args) => resolve(args));
         });
     },
 
     pauseRecording() {
+        if (Platform.OS === 'ios'){
+            return Recorder.pauseRecording();
+        }
         return new Promise((resolve, reject) => {
             Recorder.pauseRecording((args) => resolve(args));
         });
     },
 
     stopRecording() {
+        if (Platform.OS === 'ios'){
+            return Recorder.stopRecording();
+        }
         return new Promise((resolve, reject) => {
             Recorder.stopRecording((args) => resolve(args));
         });
     },
 
+    // android
     resetRecording() {
+        if (Platform.OS === 'ios'){
+            return;
+        }
         return new Promise((resolve, reject) => {
             Recorder.resetRecording((args) => resolve(args));
         });
@@ -74,6 +84,7 @@ export default {
         });
     },
 
+    // android
     encodeToM4a() {
         Recorder.encodeToM4a();
     }

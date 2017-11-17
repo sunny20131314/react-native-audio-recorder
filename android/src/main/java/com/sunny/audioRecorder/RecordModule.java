@@ -114,6 +114,7 @@ public class RecordModule extends ReactContextBaseJavaModule {
 
             // 已存在的删除，重新实例化
             if ( auRecorder != null ) {
+                recorderSecondsElapsed = 0;
                 auRecorder.stop();
                 auRecorder.release();
                 auRecorder = null;
@@ -201,6 +202,7 @@ public class RecordModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void stopRecording(Callback callback) {
+        recorderSecondsElapsed = 0;
         if (auRecorder == null){
             return;
         }
@@ -336,7 +338,6 @@ public class RecordModule extends ReactContextBaseJavaModule {
         auRecorder = null;
 
         stopTimer();
-        recorderSecondsElapsed = 0;
     }
 
     class AudioRecordTask extends AsyncTask<Void, Void, Void>{
