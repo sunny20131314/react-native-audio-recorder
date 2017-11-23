@@ -212,7 +212,8 @@ public class RecordModule extends ReactContextBaseJavaModule {
             body.putString("message", "录音结束");
             sendEvent("recordingFinished", body);
         }
-        else if (state != State.STOPPED) {
+
+        if (state != State.STOPPED) {
             stop();
         }
 
@@ -233,12 +234,11 @@ public class RecordModule extends ReactContextBaseJavaModule {
                 state = State.INITIALIZING; // 中止录音
 
                 randomAccessWriter.close(); // Remove prepared file
+            }
 
-//              删除缓存文件
-                if (audioFilePath != null)
-                {
-                    (new File(audioFilePath)).delete();
-                }
+            if (audioFilePath != null)
+            {
+                (new File(audioFilePath)).delete();
             }
 
             recorderSecondsElapsed = 0;
@@ -413,13 +413,15 @@ public class RecordModule extends ReactContextBaseJavaModule {
             @Override
             public void run() {
                 // 显示时间缩小到.1s
-                if ( recorderSecondsElapsed%10 == 0 ) {
+                //if ( recorderSecondsElapsed%10 == 0 ) {
                     WritableMap body = Arguments.createMap();
                     body.putBoolean("status", true);
-                    body.putString("message", "录音进度");
-                    body.putInt("currentTime", recorderSecondsElapsed / 10);
+                    body.putString("message", "录音进度~");
+                    // todo 整数 / 10 得到的值有小数位...  0.6000000238418579 0.699999988079071
+                    body.putDouble("currentTime", (float)recorderSecondsElapsed / 10 );
+                    body.putInt("currentTime_*10", recorderSecondsElapsed );
                     sendEvent("recordingProgress", body);
-                }
+                //}
                 recorderSecondsElapsed++;
             }
         }, 0, 100);
